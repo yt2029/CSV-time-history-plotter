@@ -2,33 +2,30 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
-# -----------------------
-# ファイル読み込み関数
-# -----------------------
-def load_file(uploaded_file, label_row, data_start_row):
+# Wide mode に設定
+st.set_page_config(layout="wide")
+
+# ファイル読み込み関数（スキップ行数を動的に設定）
+def load_file(uploaded_file, skiprows):
     try:
-        # 一旦全体を読み込む
-        raw_df = pd.read_csv(uploaded_file, header=None)
-        # 指定した行からカラム名、データ開始
-        col_names = raw_df.iloc[label_row].tolist()
-        df = raw_df.iloc[data_start_row:].copy()
-        df.columns = col_names
-        df['__source__'] = uploaded_file.name
+        df = pd.read_csv(uploaded_file, skiprows=skiprows)
+        df['__source__'] = uploaded_file.name  # ファイル名を記録
         return df
     except Exception as e:
         st.error(f"{uploaded_file.name} の読み込みエラー: {e}")
         return None
 
-# -----------------------
-# プロット関数
-# -----------------------
+# プロット関数（複数ファイルを統合）
 def plot_data(dfs, selected_columns, y2_columns):
     fig = go.Figure()
     all_data = pd.concat(dfs, ignore_index=True)
-
+    
+    # X軸スケール（Timeの共通範囲）
     time_min = pd.to_numeric(all_data['Time'], errors='coerce').min()
     time_max = pd.to_numeric(all_data['Time'], errors='coerce').max()
+    all_data_filtered = all_data[all_data['Time'].between(time_min, time_max)]
 
+    # Y軸スケーリング範囲を決定（選択列すべてから）
     y_values = pd.DataFrame()
     for df in dfs:
         for col in selected_columns + y2_columns:
@@ -38,6 +35,7 @@ def plot_data(dfs, selected_columns, y2_columns):
     y_min = y_values.min().min()
     y_max = y_values.max().max()
 
+    # 各ファイルの各列をプロット
     for df in dfs:
         source = df['__source__'].iloc[0]
         time_data = pd.to_numeric(df['Time'], errors='coerce')
@@ -61,46 +59,57 @@ def plot_data(dfs, selected_columns, y2_columns):
                     yaxis='y2'
                 ))
 
+    # レイアウト調整（凡例下・高さ700）
     fig.update_layout(
-        title='統合プロット',
+        height=700,
         xaxis_title='Time',
         yaxis=dict(title='Data Value', range=[y_min, y_max]),
         yaxis2=dict(title='Second Data Value', overlaying='y', side='right'),
         hovermode='closest',
-        autosize=True
+        autosize=True,
+        legend=dict(
+            orientation="h",
+            x=0.5,
+            y=-0.2,
+            xanchor="center",
+            yanchor="top"
+        )
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-# -----------------------
+# ----------------------------------
 # Streamlit UI
-# -----------------------
-st.title('CSVデータ可視化ツール（ラベル/データ開始行 指定付き）')
+# ----------------------------------
+st.title('CSVデータプロットツール')
 
+# ✅ スキップする行数をGUIから指定
+skiprows = st.number_input("CSVの先頭でスキップする行数", min_value=0, max_value=10, value=1, step=1)
+
+# ✅ ファイルアップロード
 uploaded_files = st.file_uploader("CSVファイルをアップロード（複数選択可）", type=["csv"], accept_multiple_files=True)
-
-# 💡 ラベル行・データ開始行の指定UI（0-based）
-label_row = st.number_input("データラベルの行（0ベース）", min_value=0, value=1, help="通常は2行目 = 1")
-data_start_row = st.number_input("データ開始の行（0ベース）", min_value=0, value=2, help="通常は3行目 = 2")
 
 if uploaded_files:
     dfs = []
     for uploaded_file in uploaded_files:
-        df = load_file(uploaded_file, label_row, data_start_row)
+        df = load_file(uploaded_file, skiprows=skiprows)
         if df is not None and 'Time' in df.columns:
             dfs.append(df)
         else:
-            st.warning(f"{uploaded_file.name} に 'Time' 列が見つかりません。スキップします。")
+            st.warning(f"{uploaded_file.name} に 'Time' 列がありません。スキップします。")
 
     if dfs:
+        # ✅ 全ファイルの列名を統合して選択肢に
         all_columns = set()
         for df in dfs:
             all_columns.update([col for col in df.columns if col not in ['Time', '__source__']])
         column_titles = sorted(all_columns)
 
+        # ✅ データ列の選択（複数OK）
         selected_columns = st.multiselect("選択するデータ列（最大6つ）", column_titles, max_selections=6)
         y2_columns = st.multiselect("第二軸に表示するデータ列", column_titles)
 
+        # ✅ プロットボタン
         if st.button("統合プロットを表示"):
             if selected_columns:
                 plot_data(dfs, selected_columns, y2_columns)
